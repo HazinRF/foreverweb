@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Для нас 💙💗</title>
+    <title>Наша связь 💙💗</title>
     <style>
         * {
             margin: 0;
@@ -17,7 +17,9 @@
             overflow: hidden;
             height: 100vh;
             width: 100vw;
-            touch-action: none; /* Важно для iOS */
+            touch-action: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
         }
         #status {
             position: absolute;
@@ -29,11 +31,37 @@
             border-radius: 15px;
             font-size: 16px;
             border: 1px solid rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            max-width: 80%;
+        }
+        #connection-status {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 100;
+            background: rgba(0,0,0,0.8);
+            padding: 8px 12px;
+            border-radius: 10px;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .connection-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #ff4757;
+        }
+        .connection-dot.connected {
+            background: #2ed573;
+            animation: pulse 2s infinite;
         }
         #canvas {
             display: block;
             width: 100%;
             height: 100%;
+            cursor: pointer;
         }
         .vibration-effect {
             position: absolute;
@@ -43,167 +71,362 @@
             pointer-events: none;
             z-index: 50;
             transform: translate(-50%, -50%);
-            animation: pulse 0.3s ease-out;
+            animation: pulse 0.4s ease-out;
         }
         @keyframes pulse {
             0% { 
-                box-shadow: 0 0 0 0px rgba(52, 152, 219, 0.7); 
+                box-shadow: 0 0 0 0px currentColor; 
                 opacity: 1;
             }
             100% { 
-                box-shadow: 0 0 0 30px rgba(52, 152, 219, 0); 
+                box-shadow: 0 0 0 40px transparent; 
                 opacity: 0;
             }
         }
+        .line-fade-out {
+            animation: fadeOutLine 5s linear forwards;
+        }
+        @keyframes fadeOutLine {
+            0% { 
+                opacity: 1;
+                filter: blur(0px);
+            }
+            70% { 
+                opacity: 0.7;
+                filter: blur(0px);
+            }
+            100% { 
+                opacity: 0;
+                filter: blur(10px);
+            }
+        }
+        #instructions {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.7);
+            padding: 15px 25px;
+            border-radius: 20px;
+            text-align: center;
+            font-size: 16px;
+            max-width: 90%;
+            backdrop-filter: blur(5px);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
         .hidden {
-            display: none;
+            display: none !important;
+        }
+        #user-count {
+            position: absolute;
+            bottom: 90px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.7);
+            padding: 8px 15px;
+            border-radius: 15px;
+            font-size: 14px;
+            backdrop-filter: blur(5px);
         }
     </style>
 </head>
 <body>
     <div id="status">💙 Он (Android)</div>
+    <div id="connection-status">
+        <span class="connection-dot"></span>
+        <span>Соединение...</span>
+    </div>
+    <div id="user-count" class="hidden"></div>
     <canvas id="canvas"></canvas>
+    <div id="instructions">Коснись экрана или рисуй пальцем 💫</div>
 
     <script>
-        // === 1. НЕМЕДЛЕННАЯ ИНИЦИАЛИЗАЦИЯ (без ожидания) ===
-        const canvas = document.getElementById('canvas');
-        const ctx = canvas.getContext('2d');
-        const statusEl = document.getElementById('status');
+        // === КОНФИГУРАЦИЯ ===
+        // ЗАМЕНИТЕ НА ВАШ АДРЕС СЕРВЕРА
+        const WS_SERVER_URL = 'ws://localhost:8080';
+        // Для реального хостинга будет что-то вроде:
+        // const WS_SERVER_URL = 'wss://ваш-сервер.onrender.com';
 
-        // === 2. ОПРЕДЕЛЕНИЕ ПЛАТФОРМЫ (мгновенно, по UserAgent) ===
+        // === ОПРЕДЕЛЕНИЕ ПЛАТФОРМЫ ===
         const userAgent = navigator.userAgent.toLowerCase();
         const isIOS = /iphone|ipad|ipod/.test(userAgent);
         const isAndroid = /android/.test(userAgent);
         
-        let userColor, userName;
+        let userColor, userName, userId;
+        
+        // Уникальный ID для каждого пользователя
+        userId = 'user_' + Math.random().toString(36).substr(2, 9);
         
         if (isAndroid) {
             userColor = '#3498db'; // Синий
             userName = 'Он (Android)';
-            statusEl.innerHTML = '💙 Он (Android)';
-            statusEl.style.color = '#3498db';
         } else if (isIOS) {
             userColor = '#e84393'; // Розовый
             userName = 'Она (iPhone)';
-            statusEl.innerHTML = '💗 Она (iPhone)';
-            statusEl.style.color = '#e84393';
         } else {
-            userColor = '#9b59b6'; // Фиолетовый для других устройств
+            userColor = '#9b59b6'; // Фиолетовый
             userName = 'Гость';
-            statusEl.textContent = 'Гость (ПК?)';
-            statusEl.style.color = '#9b59b6';
         }
 
-        // === 3. НАСТРОЙКА CANVAS ===
+        // === ЭЛЕМЕНТЫ ДОМ ===
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const statusEl = document.getElementById('status');
+        const connectionEl = document.getElementById('connection-status');
+        const connectionDot = connectionEl.querySelector('.connection-dot');
+        const instructionsEl = document.getElementById('instructions');
+        const userCountEl = document.getElementById('user-count');
+
+        // === СОСТОЯНИЕ ===
+        let activeLines = new Map(); // Map: lineId -> lineData
+        let currentLineId = null;
+        let ws = null;
+        let isConnected = false;
+        let onlineUsers = 0;
+
+        // === ИНИЦИАЛИЗАЦИЯ CANVAS ===
         function resizeCanvas() {
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
-            // Заливаем чёрным фон
-            ctx.fillStyle = '#0f0f0f';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            drawAllLines();
         }
         window.addEventListener('resize', resizeCanvas);
-        resizeCanvas(); // Вызываем СРАЗУ
+        resizeCanvas();
 
-        let activeLines = [];
+        statusEl.textContent = `${userName}`;
+        statusEl.style.color = userColor;
 
-        // === 4. ВИБРОЭФФЕКТ ===
-        function triggerVibrationEffect(x, y) {
-            // Настоящая вибрация (работает на Android, на iOS ограниченно)
+        // === WEB SOCKET СОЕДИНЕНИЕ ===
+        function connectWebSocket() {
+            ws = new WebSocket(WS_SERVER_URL);
+            
+            ws.onopen = () => {
+                console.log('✅ Подключено к серверу');
+                isConnected = true;
+                connectionDot.classList.add('connected');
+                connectionEl.innerHTML = '<span class="connection-dot connected"></span><span>Соединено</span>';
+                
+                // Отправляем информацию о себе
+                ws.send(JSON.stringify({
+                    type: 'user_join',
+                    userId,
+                    userColor,
+                    userName,
+                    platform: isIOS ? 'ios' : isAndroid ? 'android' : 'desktop'
+                }));
+            };
+            
+            ws.onclose = () => {
+                console.log('❌ Соединение закрыто');
+                isConnected = false;
+                connectionDot.classList.remove('connected');
+                connectionEl.innerHTML = '<span class="connection-dot"></span><span>Переподключение...</span>';
+                setTimeout(connectWebSocket, 2000);
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket ошибка:', error);
+            };
+            
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleServerMessage(data);
+                } catch (e) {
+                    console.error('Ошибка парсинга сообщения:', e);
+                }
+            };
+        }
+
+        // === ОБРАБОТКА СООБЩЕНИЙ С СЕРВЕРА ===
+        function handleServerMessage(data) {
+            switch (data.type) {
+                case 'line_start':
+                    createLineFromServer(data);
+                    break;
+                    
+                case 'line_update':
+                    updateLineFromServer(data);
+                    break;
+                    
+                case 'line_end':
+                    endLineFromServer(data);
+                    break;
+                    
+                case 'user_count':
+                    onlineUsers = data.count;
+                    userCountEl.textContent = `Онлайн: ${onlineUsers}`;
+                    userCountEl.classList.remove('hidden');
+                    break;
+                    
+                case 'clear_lines':
+                    activeLines.clear();
+                    drawAllLines();
+                    break;
+            }
+        }
+
+        // === ФУНКЦИИ ДЛЯ РАБОТЫ С ЛИНИЯМИ ===
+        function createLineFromServer(data) {
+            const line = {
+                id: data.lineId,
+                points: [data.point],
+                color: data.userColor,
+                width: data.platform === 'ios' ? 12 : 10,
+                userId: data.userId,
+                fading: false
+            };
+            activeLines.set(data.lineId, line);
+            drawAllLines();
+        }
+        
+        function updateLineFromServer(data) {
+            const line = activeLines.get(data.lineId);
+            if (line) {
+                line.points.push(data.point);
+                drawAllLines();
+            }
+        }
+        
+        function endLineFromServer(data) {
+            const line = activeLines.get(data.lineId);
+            if (line) {
+                // Помечаем линию для исчезновения
+                line.fading = true;
+                line.endTime = Date.now();
+                
+                // Через 5 секунд удаляем линию
+                setTimeout(() => {
+                    activeLines.delete(data.lineId);
+                    drawAllLines();
+                }, 5000);
+                
+                drawAllLines();
+            }
+        }
+
+        // === ЛОКАЛЬНАЯ ОБРАБОТКА КАСАНИЙ ===
+        canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+        canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+        canvas.addEventListener('touchend', handleTouchEnd);
+        
+        function handleTouchStart(e) {
+            e.preventDefault();
+            if (!isConnected) return;
+            
+            const touch = e.changedTouches[0];
+            const point = { x: touch.clientX, y: touch.clientY };
+            
+            // Визуальный эффект
+            createVibrationEffect(point.x, point.y);
+            
+            // Создаем новую линию
+            currentLineId = 'line_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            
+            const line = {
+                id: currentLineId,
+                points: [point],
+                color: userColor,
+                width: isIOS ? 12 : 10,
+                userId: userId,
+                fading: false
+            };
+            
+            activeLines.set(currentLineId, line);
+            
+            // Отправляем на сервер
+            ws.send(JSON.stringify({
+                type: 'line_start',
+                lineId: currentLineId,
+                point: point,
+                userColor: userColor,
+                userId: userId,
+                platform: isIOS ? 'ios' : isAndroid ? 'android' : 'desktop'
+            }));
+            
+            drawAllLines();
+        }
+        
+        function handleTouchMove(e) {
+            e.preventDefault();
+            if (!isConnected || !currentLineId) return;
+            
+            const touch = e.changedTouches[0];
+            const point = { x: touch.clientX, y: touch.clientY };
+            
+            const line = activeLines.get(currentLineId);
+            if (line) {
+                line.points.push(point);
+                
+                // Отправляем на сервер
+                ws.send(JSON.stringify({
+                    type: 'line_update',
+                    lineId: currentLineId,
+                    point: point
+                }));
+                
+                drawAllLines();
+            }
+        }
+        
+        function handleTouchEnd(e) {
+            e.preventDefault();
+            if (!isConnected || !currentLineId) return;
+            
+            const line = activeLines.get(currentLineId);
+            if (line) {
+                line.fading = true;
+                line.endTime = Date.now();
+                
+                // Отправляем на сервер
+                ws.send(JSON.stringify({
+                    type: 'line_end',
+                    lineId: currentLineId
+                }));
+                
+                // Локальное удаление через 5 секунд
+                setTimeout(() => {
+                    activeLines.delete(currentLineId);
+                    drawAllLines();
+                }, 5000);
+                
+                currentLineId = null;
+                drawAllLines();
+            }
+        }
+
+        // === ВИЗУАЛЬНЫЕ ЭФФЕКТЫ ===
+        function createVibrationEffect(x, y) {
+            // Настоящая вибрация
             if (navigator.vibrate) {
-                navigator.vibrate(10); // Очень короткий импульс
+                navigator.vibrate(20);
             }
             
-            // Визуальный эффект (работает везде)
+            // Визуальный эффект
             const effect = document.createElement('div');
             effect.className = 'vibration-effect';
             effect.style.left = x + 'px';
             effect.style.top = y + 'px';
-            effect.style.borderColor = userColor;
-            effect.style.boxShadow = `0 0 0 0px ${userColor}80`;
+            effect.style.color = userColor;
             document.body.appendChild(effect);
-            setTimeout(() => effect.remove(), 300);
+            setTimeout(() => effect.remove(), 500);
         }
 
-        // === 5. ОБРАБОТКА КАСАНИЙ (основная логика) ===
-        canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
-        canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
-        canvas.addEventListener('touchend', handleTouchEnd);
-
-        function handleTouchStart(e) {
-            e.preventDefault(); // Важно!
-            const touch = e.changedTouches[0];
-            
-            // Вибрация/эффект
-            triggerVibrationEffect(touch.clientX, touch.clientY);
-            
-            // Рисуем отпечаток
-            drawFingerprint(touch.clientX, touch.clientY);
-            
-            // Начинаем новую линию для свайпа
-            activeLines.push({
-                id: touch.identifier,
-                points: [{x: touch.clientX, y: touch.clientY}],
-                color: userColor,
-                width: isIOS ? 12 : 10,
-                startTime: Date.now()
-            });
-            
-            console.log('Touch start', touch.identifier); // Для отладки
-        }
-
-        function handleTouchMove(e) {
-            e.preventDefault();
-            for (let touch of e.changedTouches) {
-                let line = activeLines.find(l => l.id === touch.identifier);
-                if (line) {
-                    line.points.push({
-                        x: touch.clientX, 
-                        y: touch.clientY
-                    });
-                    redrawCanvas(); // Перерисовываем ВСЕ линии
-                }
-            }
-        }
-
-        function handleTouchEnd(e) {
-            for (let touch of e.changedTouches) {
-                setTimeout(() => {
-                    activeLines = activeLines.filter(l => l.id !== touch.identifier);
-                    redrawCanvas(); // Убираем исчезнувшую линию
-                }, 3000); // Линия исчезнет через 3 секунды
-            }
-        }
-
-        // === 6. ФУНКЦИИ РИСОВАНИЯ ===
-        function drawFingerprint(x, y) {
-            ctx.save();
-            ctx.globalAlpha = 0.9;
-            
-            // Простой отпечаток (круги)
-            ctx.beginPath();
-            ctx.arc(x, y, 8, 0, Math.PI * 2);
-            ctx.fillStyle = userColor;
-            ctx.fill();
-            
-            ctx.beginPath();
-            ctx.arc(x, y, 15, 0, Math.PI * 2);
-            ctx.strokeStyle = userColor;
-            ctx.lineWidth = 3;
-            ctx.stroke();
-            
-            ctx.restore();
-        }
-
-        function redrawCanvas() {
-            // 1. Очищаем canvas полностью
+        // === РИСОВАНИЕ ===
+        function drawAllLines() {
+            // Очищаем canvas
             ctx.fillStyle = '#0f0f0f';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             
-            // 2. Рисуем ВСЕ активные линии
-            activeLines.forEach(line => {
-                if (line.points.length < 2) return;
+            // Рисуем все линии
+            for (const [lineId, line] of activeLines) {
+                if (line.points.length < 2) {
+                    // Если это всего одна точка (отпечаток)
+                    drawFingerprint(line.points[0].x, line.points[0].y, line.color);
+                    continue;
+                }
                 
+                // Рисуем линию
                 ctx.beginPath();
                 ctx.moveTo(line.points[0].x, line.points[0].y);
                 
@@ -211,56 +434,141 @@
                     ctx.lineTo(line.points[i].x, line.points[i].y);
                 }
                 
-                ctx.strokeStyle = line.color;
+                // Прозрачность для исчезающих линий
+                let alpha = 1;
+                if (line.fading) {
+                    const timeSinceEnd = Date.now() - line.endTime;
+                    alpha = 1 - (timeSinceEnd / 5000);
+                    alpha = Math.max(0, Math.min(1, alpha));
+                }
+                
+                ctx.strokeStyle = line.color.replace(')', `, ${alpha})`).replace('rgb', 'rgba');
                 ctx.lineWidth = line.width;
                 ctx.lineCap = 'round';
                 ctx.lineJoin = 'round';
                 ctx.stroke();
-            });
+            }
+            
+            // Запланировать следующий кадр для анимации исчезновения
+            if (Array.from(activeLines.values()).some(line => line.fading)) {
+                requestAnimationFrame(drawAllLines);
+            }
+        }
+        
+        function drawFingerprint(x, y, color) {
+            ctx.save();
+            ctx.globalAlpha = 0.9;
+            
+            // Внутренний круг
+            ctx.beginPath();
+            ctx.arc(x, y, 8, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+            
+            // Внешний круг
+            ctx.beginPath();
+            ctx.arc(x, y, 15, 0, Math.PI * 2);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            
+            ctx.restore();
         }
 
-        // === 7. ПОДДЕРЖКА МЫШИ (для теста на ПК) ===
+        // === ПОДДЕРЖКА МЫШИ (для теста) ===
         let isMouseDown = false;
+        let mouseLineId = null;
+        
         canvas.addEventListener('mousedown', (e) => {
+            if (!isConnected) return;
+            
             isMouseDown = true;
-            const x = e.clientX;
-            const y = e.clientY;
+            const point = { x: e.clientX, y: e.clientY };
             
-            triggerVibrationEffect(x, y);
-            drawFingerprint(x, y);
+            mouseLineId = 'mouse_' + Date.now();
+            createVibrationEffect(point.x, point.y);
             
-            activeLines.push({
-                id: 'mouse',
-                points: [{x, y}],
+            const line = {
+                id: mouseLineId,
+                points: [point],
                 color: userColor,
                 width: 8,
-                startTime: Date.now()
-            });
+                userId: userId,
+                fading: false
+            };
+            
+            activeLines.set(mouseLineId, line);
+            
+            ws.send(JSON.stringify({
+                type: 'line_start',
+                lineId: mouseLineId,
+                point: point,
+                userColor: userColor,
+                userId: userId,
+                platform: 'desktop'
+            }));
+            
+            drawAllLines();
         });
-
+        
         canvas.addEventListener('mousemove', (e) => {
-            if (!isMouseDown) return;
-            let line = activeLines.find(l => l.id === 'mouse');
+            if (!isConnected || !isMouseDown || !mouseLineId) return;
+            
+            const point = { x: e.clientX, y: e.clientY };
+            const line = activeLines.get(mouseLineId);
+            
             if (line) {
-                line.points.push({x: e.clientX, y: e.clientY});
-                redrawCanvas();
+                line.points.push(point);
+                
+                ws.send(JSON.stringify({
+                    type: 'line_update',
+                    lineId: mouseLineId,
+                    point: point
+                }));
+                
+                drawAllLines();
+            }
+        });
+        
+        canvas.addEventListener('mouseup', () => {
+            if (!isConnected || !mouseLineId) return;
+            
+            const line = activeLines.get(mouseLineId);
+            if (line) {
+                line.fading = true;
+                line.endTime = Date.now();
+                
+                ws.send(JSON.stringify({
+                    type: 'line_end',
+                    lineId: mouseLineId
+                }));
+                
+                setTimeout(() => {
+                    activeLines.delete(mouseLineId);
+                    drawAllLines();
+                }, 5000);
+                
+                mouseLineId = null;
+                isMouseDown = false;
+                drawAllLines();
             }
         });
 
-        canvas.addEventListener('mouseup', () => {
-            isMouseDown = false;
+        // === ЗАГРУЗКА ===
+        window.addEventListener('load', () => {
             setTimeout(() => {
-                activeLines = activeLines.filter(l => l.id !== 'mouse');
-                redrawCanvas();
-            }, 3000);
+                instructionsEl.classList.add('hidden');
+            }, 4000);
+            
+            connectWebSocket();
+            
+            // Приветствие
+            setTimeout(() => {
+                if (isConnected) {
+                    alert("💌 Теперь мы можем рисовать вместе в реальном времени! Касайся экрана, и я увижу это мгновенно.");
+                }
+            }, 1000);
         });
-
-        // === 8. СООБЩЕНИЕ ПРИ ЗАГРУЗКЕ ===
-        setTimeout(() => {
-            alert("💌 Сайт готов! Касайся экрана, чтобы оставить след.");
-        }, 500);
-        
-        console.log('Сайт инициализирован. Платформа:', isIOS ? 'iOS' : isAndroid ? 'Android' : 'Другая');
     </script>
 </body>
 </html>

@@ -126,8 +126,9 @@ function broadcastUserCount() {
 }
 
 // Запуск сервера
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
     console.log(`🚀 Сервер запущен на порту ${PORT}`);
     console.log(`📡 WebSocket доступен по адресу: ws://localhost:${PORT}`);
+
 });

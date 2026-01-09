@@ -18,8 +18,6 @@
             height: 100vh;
             width: 100vw;
             touch-action: none;
-            user-select: none;
-            -webkit-tap-highlight-color: transparent;
         }
         #status {
             position: absolute;
@@ -32,7 +30,6 @@
             font-size: 16px;
             border: 1px solid rgba(255,255,255,0.1);
             backdrop-filter: blur(10px);
-            max-width: 80%;
         }
         #connection-status {
             position: absolute;
@@ -63,42 +60,27 @@
             height: 100%;
             cursor: pointer;
         }
-        .vibration-effect {
+        .fingerprint-symbol {
             position: absolute;
-            width: 60px;
-            height: 60px;
-            border-radius: 50%;
             pointer-events: none;
             z-index: 50;
             transform: translate(-50%, -50%);
-            animation: pulse 0.4s ease-out;
+            opacity: 0;
+            animation: fingerprintAppear 0.5s ease-out forwards,
+                       fingerprintFade 5s ease-in 0.5s forwards;
+        }
+        @keyframes fingerprintAppear {
+            0% { transform: translate(-50%, -50%) scale(0.5); opacity: 0; }
+            100% { transform: translate(-50%, -50%) scale(1); opacity: 0.9; }
+        }
+        @keyframes fingerprintFade {
+            0% { opacity: 0.9; }
+            100% { opacity: 0; }
         }
         @keyframes pulse {
-            0% { 
-                box-shadow: 0 0 0 0px currentColor; 
-                opacity: 1;
-            }
-            100% { 
-                box-shadow: 0 0 0 40px transparent; 
-                opacity: 0;
-            }
-        }
-        .line-fade-out {
-            animation: fadeOutLine 5s linear forwards;
-        }
-        @keyframes fadeOutLine {
-            0% { 
-                opacity: 1;
-                filter: blur(0px);
-            }
-            70% { 
-                opacity: 0.7;
-                filter: blur(0px);
-            }
-            100% { 
-                opacity: 0;
-                filter: blur(10px);
-            }
+            0% { opacity: 0.6; }
+            50% { opacity: 1; }
+            100% { opacity: 0.6; }
         }
         #instructions {
             position: absolute;
@@ -110,9 +92,8 @@
             border-radius: 20px;
             text-align: center;
             font-size: 16px;
-            max-width: 90%;
             backdrop-filter: blur(5px);
-            border: 1px solid rgba(255,255,255,0.1);
+            animation: pulse 2s infinite;
         }
         .hidden {
             display: none !important;
@@ -142,33 +123,28 @@
 
     <script>
         // === КОНФИГУРАЦИЯ ===
-        // ЗАМЕНИТЕ НА ВАШ АДРЕС СЕРВЕРА
         const WS_SERVER_URL = 'wss://our-drawing-site.onrender.com';
-        // Для реального хостинга будет что-то вроде:
-        // const WS_SERVER_URL = 'wss://ваш-сервер.onrender.com';
-
+        
         // === ОПРЕДЕЛЕНИЕ ПЛАТФОРМЫ ===
         const userAgent = navigator.userAgent.toLowerCase();
         const isIOS = /iphone|ipad|ipod/.test(userAgent);
         const isAndroid = /android/.test(userAgent);
         
         let userColor, userName, userId;
-        
-        // Уникальный ID для каждого пользователя
         userId = 'user_' + Math.random().toString(36).substr(2, 9);
         
         if (isAndroid) {
-            userColor = '#3498db'; // Синий
+            userColor = '#3498db';
             userName = 'Он (Android)';
         } else if (isIOS) {
-            userColor = '#e84393'; // Розовый
+            userColor = '#e84393';
             userName = 'Она (iPhone)';
         } else {
-            userColor = '#9b59b6'; // Фиолетовый
+            userColor = '#9b59b6';
             userName = 'Гость';
         }
 
-        // === ЭЛЕМЕНТЫ ДОМ ===
+        // === ЭЛЕМЕНТЫ ===
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
         const statusEl = document.getElementById('status');
@@ -178,7 +154,8 @@
         const userCountEl = document.getElementById('user-count');
 
         // === СОСТОЯНИЕ ===
-        let activeLines = new Map(); // Map: lineId -> lineData
+        let activeLines = new Map();
+        let taps = new Map();
         let currentLineId = null;
         let ws = null;
         let isConnected = false;
@@ -193,10 +170,10 @@
         window.addEventListener('resize', resizeCanvas);
         resizeCanvas();
 
-        statusEl.textContent = `${userName}`;
+        statusEl.textContent = userName;
         statusEl.style.color = userColor;
 
-        // === WEB SOCKET СОЕДИНЕНИЕ ===
+        // === WEB SOCKET ===
         function connectWebSocket() {
             ws = new WebSocket(WS_SERVER_URL);
             
@@ -206,7 +183,6 @@
                 connectionDot.classList.add('connected');
                 connectionEl.innerHTML = '<span class="connection-dot connected"></span><span>Соединено</span>';
                 
-                // Отправляем информацию о себе
                 ws.send(JSON.stringify({
                     type: 'user_join',
                     userId,
@@ -233,7 +209,7 @@
                     const data = JSON.parse(event.data);
                     handleServerMessage(data);
                 } catch (e) {
-                    console.error('Ошибка парсинга сообщения:', e);
+                    console.error('Ошибка парсинга:', e);
                 }
             };
         }
@@ -242,15 +218,48 @@
         function handleServerMessage(data) {
             switch (data.type) {
                 case 'line_start':
-                    createLineFromServer(data);
+                    if (!activeLines.has(data.lineId)) {
+                        activeLines.set(data.lineId, {
+                            id: data.lineId,
+                            points: [data.point],
+                            color: data.userColor,
+                            width: isIOS ? 12 : 10,
+                            userId: data.userId,
+                            fading: false,
+                            endTime: null,
+                            alpha: 1
+                        });
+                        drawAllLines();
+                    }
                     break;
                     
                 case 'line_update':
-                    updateLineFromServer(data);
+                    const line = activeLines.get(data.lineId);
+                    if (line) {
+                        line.points.push(data.point);
+                        drawAllLines();
+                    }
                     break;
                     
                 case 'line_end':
-                    endLineFromServer(data);
+                    const endLine = activeLines.get(data.lineId);
+                    if (endLine) {
+                        // ВАЖНО: Устанавливаем одинаковое время окончания для ВСЕХ
+                        endLine.fading = true;
+                        endLine.endTime = data.endTime || Date.now();
+                        endLine.fadeStartTime = Date.now();
+                        drawAllLines();
+                        
+                        // Удаляем через 5 секунд на ВСЕХ устройствах
+                        setTimeout(() => {
+                            activeLines.delete(data.lineId);
+                            drawAllLines();
+                        }, 5000);
+                    }
+                    break;
+                    
+                case 'tap':
+                    createFingerprintSymbol(data.point.x, data.point.y, data.userColor);
                     break;
                     
                 case 'user_count':
@@ -258,54 +267,53 @@
                     userCountEl.textContent = `Онлайн: ${onlineUsers}`;
                     userCountEl.classList.remove('hidden');
                     break;
-                    
-                case 'clear_lines':
-                    activeLines.clear();
-                    drawAllLines();
-                    break;
             }
         }
 
-        // === ФУНКЦИИ ДЛЯ РАБОТЫ С ЛИНИЯМИ ===
-        function createLineFromServer(data) {
-            const line = {
-                id: data.lineId,
-                points: [data.point],
-                color: data.userColor,
-                width: data.platform === 'ios' ? 12 : 10,
-                userId: data.userId,
-                fading: false
-            };
-            activeLines.set(data.lineId, line);
-            drawAllLines();
-        }
-        
-        function updateLineFromServer(data) {
-            const line = activeLines.get(data.lineId);
-            if (line) {
-                line.points.push(data.point);
-                drawAllLines();
-            }
-        }
-        
-        function endLineFromServer(data) {
-            const line = activeLines.get(data.lineId);
-            if (line) {
-                // Помечаем линию для исчезновения
-                line.fading = true;
-                line.endTime = Date.now();
-                
-                // Через 5 секунд удаляем линию
-                setTimeout(() => {
-                    activeLines.delete(data.lineId);
-                    drawAllLines();
-                }, 5000);
-                
-                drawAllLines();
-            }
+        // === ФУНКЦИЯ СОЗДАНИЯ ОТПЕЧАТКА (SVG символ) ===
+        function createFingerprintSymbol(x, y, color) {
+            const svgNS = "http://www.w3.org/2000/svg";
+            const fingerprint = document.createElementNS(svgNS, "svg");
+            fingerprint.setAttribute("class", "fingerprint-symbol");
+            fingerprint.setAttribute("width", "80");
+            fingerprint.setAttribute("height", "80");
+            fingerprint.setAttribute("viewBox", "0 0 80 80");
+            fingerprint.style.left = x + 'px';
+            fingerprint.style.top = y + 'px';
+            fingerprint.style.color = color;
+            
+            // Создаем красивый отпечаток пальца
+            const paths = [
+                "M40,20 C30,20 20,30 20,40 C20,50 30,60 40,60 C50,60 60,50 60,40 C60,30 50,20 40,20 Z",
+                "M40,25 C32,25 25,32 25,40 C25,48 32,55 40,55 C48,55 55,48 55,40 C55,32 48,25 40,25 Z",
+                "M40,30 C34,30 30,34 30,40 C30,46 34,50 40,50 C46,50 50,46 50,40 C50,34 46,30 40,30 Z",
+                "M35,35 L35,45",
+                "M45,35 L45,45",
+                "M30,38 L30,42",
+                "M50,38 L50,42"
+            ];
+            
+            paths.forEach((d, i) => {
+                const path = document.createElementNS(svgNS, "path");
+                path.setAttribute("d", d);
+                path.setAttribute("fill", "none");
+                path.setAttribute("stroke", "currentColor");
+                path.setAttribute("stroke-width", i < 3 ? "3" : "2");
+                path.setAttribute("stroke-linecap", "round");
+                fingerprint.appendChild(path);
+            });
+            
+            document.body.appendChild(fingerprint);
+            
+            // Удаляем после анимации
+            setTimeout(() => {
+                if (fingerprint.parentNode) {
+                    fingerprint.parentNode.removeChild(fingerprint);
+                }
+            }, 5500);
         }
 
-        // === ЛОКАЛЬНАЯ ОБРАБОТКА КАСАНИЙ ===
+        // === ОБРАБОТКА КАСАНИЙ ===
         canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
         canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
         canvas.addEventListener('touchend', handleTouchEnd);
@@ -317,31 +325,40 @@
             const touch = e.changedTouches[0];
             const point = { x: touch.clientX, y: touch.clientY };
             
-            // Визуальный эффект
-            createVibrationEffect(point.x, point.y);
+            // Вибрация
+            if (navigator.vibrate) navigator.vibrate(15);
             
-            // Создаем новую линию
+            // Отправляем TAP (короткое касание без движения)
+            ws.send(JSON.stringify({
+                type: 'tap',
+                point: point,
+                userColor: userColor,
+                userId: userId
+            }));
+            
+            // Создаем символ отпечатка локально
+            createFingerprintSymbol(point.x, point.y, userColor);
+            
+            // Начинаем линию для свайпа
             currentLineId = 'line_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
             
-            const line = {
+            activeLines.set(currentLineId, {
                 id: currentLineId,
                 points: [point],
                 color: userColor,
                 width: isIOS ? 12 : 10,
                 userId: userId,
-                fading: false
-            };
+                fading: false,
+                endTime: null,
+                alpha: 1
+            });
             
-            activeLines.set(currentLineId, line);
-            
-            // Отправляем на сервер
             ws.send(JSON.stringify({
                 type: 'line_start',
                 lineId: currentLineId,
                 point: point,
                 userColor: userColor,
-                userId: userId,
-                platform: isIOS ? 'ios' : isAndroid ? 'android' : 'desktop'
+                userId: userId
             }));
             
             drawAllLines();
@@ -358,7 +375,6 @@
             if (line) {
                 line.points.push(point);
                 
-                // Отправляем на сервер
                 ws.send(JSON.stringify({
                     type: 'line_update',
                     lineId: currentLineId,
@@ -373,60 +389,59 @@
             e.preventDefault();
             if (!isConnected || !currentLineId) return;
             
+            // Отправляем событие окончания линии
+            ws.send(JSON.stringify({
+                type: 'line_end',
+                lineId: currentLineId
+            }));
+            
+            // Локально помечаем линию как исчезающую
             const line = activeLines.get(currentLineId);
             if (line) {
                 line.fading = true;
                 line.endTime = Date.now();
+                line.fadeStartTime = Date.now();
                 
-                // Отправляем на сервер
-                ws.send(JSON.stringify({
-                    type: 'line_end',
-                    lineId: currentLineId
-                }));
-                
-                // Локальное удаление через 5 секунд
+                // Удаляем через 5 секунд на ВСЕХ устройствах
                 setTimeout(() => {
                     activeLines.delete(currentLineId);
                     drawAllLines();
                 }, 5000);
-                
-                currentLineId = null;
-                drawAllLines();
-            }
-        }
-
-        // === ВИЗУАЛЬНЫЕ ЭФФЕКТЫ ===
-        function createVibrationEffect(x, y) {
-            // Настоящая вибрация
-            if (navigator.vibrate) {
-                navigator.vibrate(20);
             }
             
-            // Визуальный эффект
-            const effect = document.createElement('div');
-            effect.className = 'vibration-effect';
-            effect.style.left = x + 'px';
-            effect.style.top = y + 'px';
-            effect.style.color = userColor;
-            document.body.appendChild(effect);
-            setTimeout(() => effect.remove(), 500);
+            currentLineId = null;
+            drawAllLines();
         }
 
-        // === РИСОВАНИЕ ===
+        // === ПЛАВНОЕ ИСЧЕЗНОВЕНИЕ ЛИНИЙ ===
         function drawAllLines() {
             // Очищаем canvas
             ctx.fillStyle = '#0f0f0f';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             
+            const now = Date.now();
+            
             // Рисуем все линии
             for (const [lineId, line] of activeLines) {
-                if (line.points.length < 2) {
-                    // Если это всего одна точка (отпечаток)
-                    drawFingerprint(line.points[0].x, line.points[0].y, line.color);
-                    continue;
+                if (line.points.length < 2) continue;
+                
+                // Рассчитываем прозрачность для исчезающих линий
+                let alpha = 1;
+                if (line.fading && line.endTime) {
+                    const timeSinceEnd = now - line.endTime;
+                    const fadeProgress = Math.min(timeSinceEnd / 5000, 1); // 5 секунд
+                    
+                    // Плавная кривая исчезновения
+                    alpha = 1 - fadeProgress;
+                    alpha = Math.pow(alpha, 2); // Квадратичное замедление
+                    
+                    // Добавляем размытие при исчезновении
+                    ctx.filter = `blur(${fadeProgress * 8}px)`;
+                } else {
+                    ctx.filter = 'none';
                 }
                 
-                // Рисуем линию
+                // Рисуем линию с градиентом
                 ctx.beginPath();
                 ctx.moveTo(line.points[0].x, line.points[0].y);
                 
@@ -434,48 +449,37 @@
                     ctx.lineTo(line.points[i].x, line.points[i].y);
                 }
                 
-                // Прозрачность для исчезающих линий
-                let alpha = 1;
-                if (line.fading) {
-                    const timeSinceEnd = Date.now() - line.endTime;
-                    alpha = 1 - (timeSinceEnd / 5000);
-                    alpha = Math.max(0, Math.min(1, alpha));
+                // Создаем градиентную линию
+                if (line.points.length > 1) {
+                    const gradient = ctx.createLinearGradient(
+                        line.points[0].x, line.points[0].y,
+                        line.points[line.points.length-1].x, line.points[line.points.length-1].y
+                    );
+                    gradient.addColorStop(0, line.color.replace(')', `, ${alpha * 0.8})`).replace('rgb', 'rgba'));
+                    gradient.addColorStop(1, line.color.replace(')', `, ${alpha * 0.3})`).replace('rgb', 'rgba'));
+                    
+                    ctx.strokeStyle = gradient;
+                } else {
+                    ctx.strokeStyle = line.color.replace(')', `, ${alpha})`).replace('rgb', 'rgba');
                 }
                 
-                ctx.strokeStyle = line.color.replace(')', `, ${alpha})`).replace('rgb', 'rgba');
                 ctx.lineWidth = line.width;
                 ctx.lineCap = 'round';
                 ctx.lineJoin = 'round';
                 ctx.stroke();
+                
+                // Сбрасываем фильтр
+                ctx.filter = 'none';
             }
             
-            // Запланировать следующий кадр для анимации исчезновения
-            if (Array.from(activeLines.values()).some(line => line.fading)) {
+            // Запрашиваем следующий кадр, если есть исчезающие линии
+            const hasFadingLines = Array.from(activeLines.values()).some(line => line.fading);
+            if (hasFadingLines) {
                 requestAnimationFrame(drawAllLines);
             }
         }
-        
-        function drawFingerprint(x, y, color) {
-            ctx.save();
-            ctx.globalAlpha = 0.9;
-            
-            // Внутренний круг
-            ctx.beginPath();
-            ctx.arc(x, y, 8, 0, Math.PI * 2);
-            ctx.fillStyle = color;
-            ctx.fill();
-            
-            // Внешний круг
-            ctx.beginPath();
-            ctx.arc(x, y, 15, 0, Math.PI * 2);
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 3;
-            ctx.stroke();
-            
-            ctx.restore();
-        }
 
-        // === ПОДДЕРЖКА МЫШИ (для теста) ===
+        // === ПОДДЕРЖКА МЫШИ ===
         let isMouseDown = false;
         let mouseLineId = null;
         
@@ -485,27 +489,34 @@
             isMouseDown = true;
             const point = { x: e.clientX, y: e.clientY };
             
-            mouseLineId = 'mouse_' + Date.now();
-            createVibrationEffect(point.x, point.y);
+            // Отправляем tap
+            ws.send(JSON.stringify({
+                type: 'tap',
+                point: point,
+                userColor: userColor,
+                userId: userId
+            }));
             
-            const line = {
+            createFingerprintSymbol(point.x, point.y, userColor);
+            
+            mouseLineId = 'mouse_' + Date.now();
+            activeLines.set(mouseLineId, {
                 id: mouseLineId,
                 points: [point],
                 color: userColor,
                 width: 8,
                 userId: userId,
-                fading: false
-            };
-            
-            activeLines.set(mouseLineId, line);
+                fading: false,
+                endTime: null,
+                alpha: 1
+            });
             
             ws.send(JSON.stringify({
                 type: 'line_start',
                 lineId: mouseLineId,
                 point: point,
                 userColor: userColor,
-                userId: userId,
-                platform: 'desktop'
+                userId: userId
             }));
             
             drawAllLines();
@@ -533,41 +544,35 @@
         canvas.addEventListener('mouseup', () => {
             if (!isConnected || !mouseLineId) return;
             
+            ws.send(JSON.stringify({
+                type: 'line_end',
+                lineId: mouseLineId
+            }));
+            
             const line = activeLines.get(mouseLineId);
             if (line) {
                 line.fading = true;
                 line.endTime = Date.now();
-                
-                ws.send(JSON.stringify({
-                    type: 'line_end',
-                    lineId: mouseLineId
-                }));
+                line.fadeStartTime = Date.now();
                 
                 setTimeout(() => {
                     activeLines.delete(mouseLineId);
                     drawAllLines();
                 }, 5000);
-                
-                mouseLineId = null;
-                isMouseDown = false;
-                drawAllLines();
             }
+            
+            mouseLineId = null;
+            isMouseDown = false;
+            drawAllLines();
         });
 
         // === ЗАГРУЗКА ===
         window.addEventListener('load', () => {
             setTimeout(() => {
                 instructionsEl.classList.add('hidden');
-            }, 4000);
+            }, 5000);
             
             connectWebSocket();
-            
-            // Приветствие
-            setTimeout(() => {
-                if (isConnected) {
-                    alert("💌 Теперь мы можем рисовать вместе в реальном времени! Касайся экрана, и я увижу это мгновенно.");
-                }
-            }, 1000);
         });
     </script>
 </body>
